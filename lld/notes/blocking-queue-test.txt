@@ -1,0 +1,281 @@
+BOUNDED BLOCKING QUEUE - IMPLEMENTATION NOTES
+Companion to BlockingQueueTest.java
+============================================================
+
+1. PURPOSE
+----------
+A fixed-capacity FIFO queue shared by multiple producers and
+consumers. Producers wait when full; consumers wait when empty.
+Shutdown rejects new inserts but lets consumers drain the queue.
+
+  Producer(s) ---> [ bounded FIFO queue ] ---> Consumer(s)
+                         capacity = N
+
+2. CLASS DESIGN
+---------------
+  BlockingQueue<T>           SafeShutdownEligible
+  put, take, offer, size     shutdown, isShutdown
+          ^                           ^
+          | implements                | implements
+          +--------- BlockingQueueImpl<T> --------+
+                            |
+                            | owns
+                            v
+                      CircularArray<T>
+
+CircularArray handles storage only; it is not thread-safe.
+BlockingQueueImpl owns the array and synchronizes its accesses.
+The separate shutdown interface keeps lifecycle operations
+distinct from the basic queue contract.
+
+3. CIRCULAR ARRAY
+----------------
+Fields:
+  buffer : fixed-size backing array
+  head   : next element to remove
+  tail   : next slot to insert into
+  count  : number of stored elements
+
+Example, capacity = 5:
+  index       0    1    2    3    4
+  full      [10] [20] [30] [40] [50]
+  head=0, tail=0, count=5
+
+  take() twice -> 10, 20
+            [--] [--] [30] [40] [50]
+  head=2, tail=0, count=3
+
+  put(60), put(70)
+            [60] [70] [30] [40] [50]
+  head=2, tail=2, count=5
+
+  Logical FIFO order: 30 -> 40 -> 50 -> 60 -> 70
+
+Modulo arithmetic wraps the indexes:
+  tail = (tail + 1) % buffer.length
+  head = (head + 1) % buffer.length
+
+No shifting is required; insertion and removal are O(1).
+head == tail alone cannot distinguish full from empty.
+count == 0 means empty; count == capacity means full.
+Invariant: 0 <= count <= capacity.
+
+remove() clears the vacated slot to release its reference,
+allowing garbage collection when nothing else references it.
+add() returns false when full; remove() returns null when empty.
+The outer queue checks these conditions before calling them.
+
+(T[]) new Object[n] is an unchecked cast due to type erasure.
+@SuppressWarnings("unchecked") hides that compiler warning;
+it does not perform runtime validation. The backing array is
+private and is not returned to callers.
+
+4. SYNCHRONIZATION
+------------------
+                 +-------------------------+
+  Producers ---> |     ReentrantLock       | <--- Consumers
+                 | buffer/head/tail/count  |
+                 | shutdown                |
+                 +-------------------------+
+                     |                 |
+                  notFull           notEmpty
+               producer waiters   consumer waiters
+
+One lock protects every queue operation and the shutdown flag.
+Only one thread can modify the queue at a time.
+No volatile or AtomicInteger is needed for state accessed
+exclusively under this lock.
+
+lockInterruptibly() lets an interrupted caller abandon lock
+acquisition. try-finally releases the lock even on exceptions.
+
+Condition.await():
+  1. Atomically releases the associated lock and waits.
+  2. Wakes after a signal, interruption or spurious wakeup.
+  3. Reacquires the lock before returning or throwing.
+
+signal() makes a waiter eligible to reacquire the lock; it
+does not immediately hand ownership to that waiter.
+
+Always recheck a predicate using while, not if:
+  C1 and C2 wait on empty queue.
+  One item arrives; C1 consumes it.
+  C2 must recheck emptiness before trying to consume.
+  Spurious wakeups are also permitted.
+
+5. PUT (blocking producer)
+--------------------------
+  put(item)
+      |
+  Reject null; acquire lock interruptibly
+      |
+  Full AND not shutdown? -- yes --> await(notFull)
+      ^                                |
+      +---------- recheck -------------+
+      | no
+  Shutdown? -- yes --> throw IllegalStateException
+      | no
+  array.add(item)
+      |
+  notEmpty.signal() -> notify one waiting consumer
+      |
+  unlock (finally)
+
+If shutdown occurs while waiting, the loop exits and the
+producer throws rather than silently dropping the item.
+
+6. TAKE (blocking consumer)
+--------------------------
+  take()
+      |
+  Acquire lock interruptibly
+      |
+  Empty AND not shutdown? -- yes --> await(notEmpty)
+      ^                                 |
+      +----------- recheck -------------+
+      | no
+  Shutdown AND empty? -- yes --> throw IllegalStateException
+      | no
+  array.remove()
+      |
+  notFull.signal() -> notify one waiting producer
+      |
+  Return removed element; unlock (finally)
+
+A shut-down queue may still contain elements. take() is
+allowed until those elements have been consumed.
+
+7. OFFER (timed producer)
+-------------------------
+  offer(item, timeout, unit)
+      |
+  Reject null; convert timeout to nanoseconds; record start
+      |
+  tryLock(timeout, unit) -- fails --> false
+      | succeeds
+  remaining -= System.nanoTime() - start
+      |
+  Full AND not shutdown?
+      | yes
+      +--> remaining <= 0? -- yes --> false
+      |          | no
+      |    remaining = notFull.awaitNanos(remaining)
+      +---------- recheck
+      | no
+  Shutdown? -- yes --> false
+      | no
+  array.add(item); notEmpty.signal(); return true
+      |
+  unlock (finally, for every path after acquiring lock)
+
+Example timeout budget (5 seconds):
+  |-- lock acquisition: 3s --|-- capacity wait: up to 2s --|
+  0                          3                            5
+
+awaitNanos returns an estimate of remaining time, so a wakeup
+does not restart the original timeout. nanoTime measures
+elapsed time, rather than wall-clock time.
+
+The budget controls waiting, not a hard real-time deadline:
+scheduling and lock reacquisition can delay return, and an
+available slot can be accepted when the predicate is rechecked.
+
+8. SIZE AND IS_SHUTDOWN
+----------------------
+Both getters acquire the same lock, read the protected state,
+and release it in finally. This provides memory visibility
+and a consistent value at the moment of the read.
+The value may change immediately after the method returns.
+
+9. GRACEFUL SHUTDOWN
+--------------------
+  +-----------+  shutdown()  +-----------+  last take()  +------------+
+  | RUNNING   | -----------> | DRAINING  | -----------> | TERMINATED |
+  +-----------+              +-----------+              +------------+
+  shutdown=false             shutdown=true              shutdown=true
+                             count > 0                  count == 0
+
+If the queue is already empty, shutdown goes directly to
+TERMINATED. These are conceptual states, not an actual enum.
+
+shutdown():
+  acquire lock -> shutdown = true -> signalAll on both
+  conditions -> release lock.
+
+Why signalAll?
+  Every waiting producer and consumer must recheck its
+  predicate after shutdown. A single signal could strand others.
+
+  Operation     RUNNING       DRAINING       TERMINATED
+  -------------------------------------------------------
+  put           insert/wait   exception      exception
+  offer         insert/wait   false          false
+  take          remove/wait   remove         exception
+  size          count         count          0
+  isShutdown    false         true           true
+
+Example:
+  Queue = [10, 20, 30]
+  shutdown()
+  take() -> 10
+  take() -> 20
+  take() -> 30
+  take() -> IllegalStateException
+  put(40) -> IllegalStateException
+  offer(40, ...) -> false
+
+Shutdown does not wait for draining to finish, create consumer
+threads, or interrupt running threads. Consumers must perform
+the draining. Repeated shutdown calls are safe.
+
+10. CORRECTNESS AND COMPLEXITY
+-----------------------------
+Linearization points:
+  put / successful offer : insertion under lock
+  take                   : removal under lock
+  size / isShutdown      : protected state read
+  shutdown               : setting shutdown = true
+
+FIFO refers to element order, not producer arrival order.
+The default ReentrantLock is non-fair; starvation is possible.
+Interrupting one waiter does not cancel the whole queue.
+
+  put, take, offer, size, isShutdown : O(1) core work
+  shutdown                         : O(W) waiter signalling
+  backing storage                  : O(N)
+
+Excludes waiting, repeated wakeups, lock contention and
+synchronization bookkeeping. Waiting threads use extra memory.
+
+11. REVIEW NOTES / OPTIONAL IMPROVEMENTS
+----------------------------------------
+The uploaded source already removes the preliminary isShutdown()
+check from offer(), so no untimed getter acquisition occurs there.
+
+Remaining improvements (not applied to the Java source):
+  - Clamp the timeout budget to avoid underflow for extremely
+    negative timeouts:
+      long remaining = Math.max(0L, unit.toNanos(timeout));
+    Use tryLock(remaining, TimeUnit.NANOSECONDS).
+  - Validate capacity inside CircularArray too, if it remains
+    independently accessible. Its caller currently validates it.
+  - Change capacity error message to "Capacity must be positive".
+  - Remove stray semicolons after unlock() in size/shutdown.
+  - Consider making CircularArray private to enforce ownership.
+
+12. TEST CHECKLIST
+------------------
+[ ] FIFO and circular wraparound
+[ ] Full queue blocks producer; take wakes it
+[ ] Empty queue blocks consumer; put wakes it
+[ ] Timed offer succeeds or times out
+[ ] Interrupt blocked producer and consumer
+[ ] Multiple producers/consumers: no loss or duplication
+[ ] Shutdown full queue wakes all producers
+[ ] Shutdown empty queue wakes all consumers
+[ ] Shutdown non-empty queue drains in FIFO order
+[ ] Reject insertion after shutdown
+[ ] Reject null items and non-positive queue capacity
+
+Static source review only; tests were not executed.
+Original Java source is unchanged.
