@@ -276,6 +276,3 @@ Remaining improvements (not applied to the Java source):
 [ ] Shutdown non-empty queue drains in FIFO order
 [ ] Reject insertion after shutdown
 [ ] Reject null items and non-positive queue capacity
-
-Static source review only; tests were not executed.
-Original Java source is unchanged.

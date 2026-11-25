@@ -1,0 +1,328 @@
+CYCLIC ORDERED EXECUTION - JAVA CONCURRENCY NOTES
+================================================
+Source: CyclicOrderedExecution.java
+Java: 21+ (Thread.ofPlatform)
+
+1. PROBLEM AND CONTRACT
+-----------------------
+N independent threads print their assigned characters in strict order
+for K cycles, regardless of scheduling or thread startup order.
+
+Example: N = 3, K = 2
+
+    Thread 0 -> A
+    Thread 1 -> B
+    Thread 2 -> C
+
+    Cycle 1       Cycle 2
+    A -> B -> C -> A -> B -> C -> DONE
+
+The actual code prints one line per operation:
+    0 -> A
+    1 -> B
+    2 -> C
+    0 -> A
+    1 -> B
+    2 -> C
+
+Assumptions: exactly one participant per ID, every participant calls
+print(id) once, and every participant eventually gets scheduled.
+Normal completion means N * K print operations.
+
+2. CLASS STRUCTURE AND SHARED STATE
+-----------------------------------
+    CyclicOrderedExecution
+    |
+    +-- n, k             : immutable configuration
+    +-- turn             : next eligible thread ID (initially 0)
+    +-- lock             : one ReentrantLock
+    +-- conditions[N]    : one waiting condition per participant
+    +-- cancelled        : shared cancellation flag (initially false)
+    |
+    +-- constructor(n,k) : validate and initialize
+    +-- print(id)        : execute K ordered turns
+    +-- cancel()         : stop all participants cooperatively
+    +-- main()           : start N platform threads
+
+Both turn and cancelled are accessed under the same lock.
+Neither volatile nor atomic variables are required for these fields.
+
+Constructor:
+    Reject n <= 0, n > 26, or k <= 0.
+    Create N conditions using lock.newCondition().
+    Each condition is associated with the SAME lock.
+
+3. CYCLIC TURN MANAGEMENT
+-------------------------
+    turn = (turn + 1) % n;
+
+For N = 3:
+
+        +---------------------+
+        |                     |
+        v                     |
+    [0 / A] --> [1 / B] --> [2 / C]
+        0           1           2
+
+Invariant: 0 <= turn < n.
+Only the participant whose ID equals turn may print.
+
+The turn variable is a logical token, not an operating system
+thread scheduler. Threads compete for the lock; the predicate
+determines which one is permitted to proceed.
+
+4. PRINT METHOD - STEP BY STEP
+------------------------------
+    print(threadId)
+         |
+         v
+    Validate thread ID
+         |
+         v
+    Repeat K times <---------------------------+
+         |                                     |
+         v                                     |
+    lock.lockInterruptibly()                   |
+         |                                     |
+         v                                     |
+    Cancelled? -- yes --> return               |
+         |                 (finally unlocks)   |
+         no                                    |
+         v                                     |
+    My turn? -- no --> await() --> recheck     |
+         |              predicate              |
+         yes                                   |
+         v                                     |
+    Print assigned character                   |
+         |                                     |
+    Advance turn                               |
+         |                                     |
+    Signal next condition                      |
+         |                                     |
+    Unlock in finally -------------------------+
+         |
+    After K iterations: return normally
+
+The actual guard combines both checks:
+    while (!cancelled && turn != threadId) {
+        conditions[threadId].await();
+    }
+    if (cancelled) return;
+
+The lock protects the entire print/advance/signal operation.
+Consequently, another participant cannot print between these steps.
+
+lockInterruptibly() is outside the inner try/finally so unlock()
+is called only after successful lock acquisition.
+
+5. WHY CONDITIONS AND WHY WHILE?
+--------------------------------
+Example: C acquires the lock before A.
+
+    C: lock -> turn != 2 -> await()
+                            |
+                            +-- releases lock atomically with waiting
+
+    A: lock -> print A -> turn = 1 -> signal B -> unlock
+    B: lock -> print B -> turn = 2 -> signal C -> unlock
+    C: reacquire lock -> recheck -> print C -> advance -> unlock
+
+await() releases the associated lock while waiting and reacquires
+it before returning normally or throwing InterruptedException.
+
+signal() makes a waiting thread eligible to resume; it does not
+immediately hand over lock ownership.
+
+Use while rather than if because:
+    - Spurious wakeups are permitted.
+    - A notification is not a general guarantee that a predicate holds.
+    - A cancellation wakeup must also be handled.
+
+Here, each participant has a dedicated condition, so signal() targets
+the next participant rather than waking all N threads per operation.
+
+What if the next thread has not started yet?
+    A signals B while B is not waiting.
+    The notification is not stored.
+    But turn remains B's ID.
+    When B starts, it sees its turn and proceeds without awaiting.
+
+The persistent predicate, not the notification itself, prevents
+missed-signal failures under the stated participation contract.
+
+6. NORMAL TERMINATION
+---------------------
+Each thread owns its own loop counter:
+
+    for (int i = 0; i < k; ++i) { ... }
+
+No global cycle counter or normal-completion flag is needed.
+
+For N = 3, K = 2:
+
+    A1 -> B1 -> C1 -> A2 -> B2 -> C2
+                      |     |     |
+                      exit  exit  exit
+
+After C2, turn wraps to zero, but A has already finished.
+The final signal is harmless. Nobody needs another turn.
+
+7. INTERRUPTION AND COOPERATIVE CANCELLATION
+--------------------------------------------
+If B exits unexpectedly before completing its turns:
+
+    A -> B -> C -> A -> [B missing] -> STUCK
+                          |
+                          +-- C and A may wait forever
+
+The code catches InterruptedException from lockInterruptibly()
+or await(), calls cancel(), then rethrows the exception.
+
+    Participant interrupted
+              |
+              v
+    catch InterruptedException
+              |
+              v
+    cancel()
+              |
+              v
+    cancelled = true (under lock)
+              |
+              v
+    signalAll() on every condition
+              |
+              v
+    Waiting participants reacquire lock
+              |
+              v
+    Observe cancelled -> return -> unlock
+
+Participants not yet waiting will also observe cancelled when
+they acquire the lock. Future valid print() calls do not print
+once cancellation has been established.
+
+This is cooperative, all-participant cancellation. It does not
+skip the failed thread or guarantee completion of a partial cycle.
+Cancellation and printing are serialized by the shared lock.
+
+main() catches the propagated InterruptedException and restores
+the interrupted status using Thread.currentThread().interrupt().
+
+8. IMPORTANT CAVEAT IN THE ACTUAL SOURCE
+---------------------------------------
+The current cancel() uses:
+
+    void cancel() throws InterruptedException {
+        lock.lockInterruptibly();
+        ...
+    }
+
+This is a weakness. A second interruption during cancellation
+can prevent the lock acquisition, leaving cancelled false and
+other participants blocked. The first InterruptedException
+normally clears the interrupted status; that alone does not
+protect cancellation against a subsequent interrupt.
+
+Recommended improvement (not applied to the Java source):
+
+    void cancel() {
+        lock.lock();
+        try {
+            cancelled = true;
+            for (Condition condition : conditions) {
+                condition.signalAll();
+            }
+        } finally {
+            lock.unlock();
+        }
+    }
+
+lock.lock() makes the cancellation acquisition non-interruptible.
+The interrupting participant can then rethrow the original exception.
+This assumes lock holders eventually release the lock.
+
+Other limitations:
+    - A participant that never starts can stall the sequence.
+    - Duplicate thread IDs violate the participation contract.
+    - Unexpected unchecked failures are not handled by the
+      InterruptedException catch.
+    - The default ReentrantLock is non-fair.
+    - Printing under the lock preserves ordering but slow output
+      increases lock contention.
+
+9. MAIN METHOD AND EXPECTED OUTPUT
+----------------------------------
+The uploaded main() uses N = 11 and K = 100.
+It starts 11 platform threads, with IDs 0 through 10.
+
+    0 -> A
+    1 -> B
+    ...
+    10 -> K
+    0 -> A
+    ...
+
+Expected: 1,100 lines on normal completion.
+The main method does not explicitly join the threads; these are
+non-daemon platform threads by default, so they keep the JVM alive.
+For tests, retain thread references and join with a bounded timeout.
+
+10. CORRECTNESS AND COMPLEXITY
+------------------------------
+Safety:
+    - Only the current turn holder prints.
+    - Every successful iteration advances turn exactly once.
+    - All shared mutable state is guarded by one lock.
+    - finally prevents lock leakage after successful acquisition.
+
+Liveness:
+    - Normal progress assumes every required participant eventually runs.
+    - Cancellation wakes all waiters once its flag is set.
+    - The current interruptible cancel() caveat must be addressed
+      for more robust cancellation.
+
+Complexity (excluding scheduling, waiting and output I/O):
+    Normal execution : O(N * K) logical print/advance operations
+    Space            : O(N) condition objects, plus N thread resources
+    Cancellation     : O(N + W) condition traversal and waiter signalling,
+                       where W is the number of waiting participants
+
+11. TEST CHECKLIST
+------------------
+[ ] N = 1, K = 1
+[ ] N = 3, K = 100
+[ ] N = 26, K = 10
+[ ] Start threads in reverse or randomized order
+[ ] Verify exact output order and N * K lines
+[ ] Interrupt a participant waiting on its condition
+[ ] Interrupt a participant waiting to acquire the lock
+[ ] Cancel before participants begin
+[ ] Cancel midway through execution
+[ ] Repeated cancellation
+[ ] Verify all participants terminate within a bounded join timeout
+[ ] Reject invalid constructor arguments and thread IDs
+
+12. INTERVIEW REVISION
+----------------------
+Q: Why N conditions?
+A: To target the next eligible participant and reduce wakeups.
+
+Q: Why no AtomicInteger for turn?
+A: All turn accesses are protected by the same lock.
+
+Q: Why signalAll during cancellation?
+A: Every participant must wake to observe the global stop state.
+
+Q: Why no shared cycle counter?
+A: Each participant independently performs exactly K iterations.
+
+Q: Is this lock-free?
+A: No. It uses a shared explicit lock and blocking conditions.
+
+Q: What is the key concurrency pattern?
+A: Guarded suspension with targeted signalling and cooperative
+   cancellation.
+
+Review basis: uploaded source, static inspection only. No runtime
+tests were performed. The original Java source is unchanged.

@@ -4,11 +4,11 @@
     <option name="autoReloadType" value="SELECTIVE" />
   </component>
   <component name="ChangeListManager">
-    <list default="true" id="28b208d5-566d-4449-9149-3cf079c79540" name="Changes" comment="inti">
-      <change afterPath="$PROJECT_DIR$/notes/blocking-queue-test.txt" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/src/main/java/org/example/BlockingQueueTest.java" afterDir="false" />
+    <list default="true" id="28b208d5-566d-4449-9149-3cf079c79540" name="Changes" comment="Init">
+      <change afterPath="$PROJECT_DIR$/notes/cyclic-ordered-execution.txt" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/.gitignore" beforeDir="false" afterPath="$PROJECT_DIR$/.gitignore" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/.idea/workspace.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/workspace.xml" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/src/main/java/org/example/CyclicOrderedExecution.java" beforeDir="false" afterPath="$PROJECT_DIR$/src/main/java/org/example/CyclicOrderedExecution.java" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/notes/blocking-queue-test.txt" beforeDir="false" afterPath="$PROJECT_DIR$/notes/blocking-queue-test.txt" afterDir="false" />
     </list>
     <option name="SHOW_DIALOG" value="false" />
     <option name="HIGHLIGHT_CONFLICTS" value="true" />
@@ -44,6 +44,11 @@
     "git-widget-placeholder": "main"
   }
 }]]></component>
+  <component name="RecentsManager">
+    <key name="MoveFile.RECENT_KEYS">
+      <recent name="$PROJECT_DIR$/notes" />
+    </key>
+  </component>
   <component name="RunManager">
     <configuration name="CyclicOrderedExecution" type="Application" factoryName="Application" temporary="true" nameIsGenerated="true">
       <option name="MAIN_CLASS_NAME" value="org.example.CyclicOrderedExecution" />
@@ -81,11 +86,20 @@
       <option name="project" value="LOCAL" />
       <updated>1795621310841</updated>
     </task>
-    <option name="localTasksCounter" value="2" />
+    <task id="LOCAL-00002" summary="Init">
+      <option name="closed" value="true" />
+      <created>1795635994479</created>
+      <option name="number" value="00002" />
+      <option name="presentableId" value="LOCAL-00002" />
+      <option name="project" value="LOCAL" />
+      <updated>1795635994479</updated>
+    </task>
+    <option name="localTasksCounter" value="3" />
     <servers />
   </component>
   <component name="VcsManagerConfiguration">
     <MESSAGE value="inti" />
-    <option name="LAST_COMMIT_MESSAGE" value="inti" />
+    <MESSAGE value="Init" />
+    <option name="LAST_COMMIT_MESSAGE" value="Init" />
   </component>
 </project>
