@@ -5,10 +5,10 @@
   </component>
   <component name="ChangeListManager">
     <list default="true" id="28b208d5-566d-4449-9149-3cf079c79540" name="Changes" comment="Init">
-      <change afterPath="$PROJECT_DIR$/notes/cyclic-ordered-execution.txt" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/.gitignore" beforeDir="false" afterPath="$PROJECT_DIR$/.gitignore" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/src/main/java/org/example/fairsemaphore/CountingSemaphore.java" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/src/main/java/org/example/fairsemaphore/FairSemaphore.java" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/src/main/java/org/example/fairsemaphore/OptimizedFairSemaphore.java" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/.idea/workspace.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/workspace.xml" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/notes/blocking-queue-test.txt" beforeDir="false" afterPath="$PROJECT_DIR$/notes/blocking-queue-test.txt" afterDir="false" />
     </list>
     <option name="SHOW_DIALOG" value="false" />
     <option name="HIGHLIGHT_CONFLICTS" value="true" />
@@ -18,6 +18,7 @@
   <component name="FileTemplateManagerImpl">
     <option name="RECENT_TEMPLATES">
       <list>
+        <option value="Interface" />
         <option value="Class" />
       </list>
     </option>
